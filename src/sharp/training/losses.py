@@ -111,12 +111,15 @@ def photometric_loss(
     Returns:
         Scalar loss.
     """
+    # NOTE: do NOT mask the target by alpha.  If we zeroed both pred and target
+    # wherever alpha≈0, the model would learn "go transparent → loss=0" (opacity
+    # collapse).  Instead we compute L1 over the full image so transparent
+    # renders are penalised for not matching the actual pixel colours.
     if alpha is not None:
-        # Mask out background (alpha ≈ 0) so the model is not penalised for
-        # background colour when scene coverage is incomplete.
+        # Only mask the *prediction* so background pixels don't get double-
+        # penalised for colour, but the target stays fully visible.
         mask = (alpha > 0.1).float()
-        pred = pred * mask
-        target = target * mask
+        pred = pred * mask + target.detach() * (1.0 - mask)
 
     l1 = F.l1_loss(pred, target)
 
@@ -183,8 +186,12 @@ def opacity_regularisation(opacities: torch.Tensor) -> torch.Tensor:
         Scalar regularisation loss.
     """
     o = opacities.clamp(1e-6, 1 - 1e-6)
+    # Entropy term: pushes opacities away from 0.5 toward bimodal (0 or 1).
     entropy = -(o * torch.log(o) + (1 - o) * torch.log(1 - o))
-    return entropy.mean()
+    # Mean opacity floor: strongly penalises the all-transparent collapse.
+    # Target mean opacity ≥ 0.3 — if mean drops below this, add a penalty.
+    mean_opacity_penalty = F.relu(0.3 - o.mean())
+    return entropy.mean() + 10.0 * mean_opacity_penalty
 
 
 # ---------------------------------------------------------------------------
